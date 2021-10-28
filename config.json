@@ -1,0 +1,14 @@
+{
+  "pusher_type": "redis",
+  "timezone": "UTC",
+  "clean_klines": false,
+  "klines_save_days": 30,
+  "klines_web_fetch_worker": 2,
+  "save_buffer_millseconds": 20000,
+  "redis": {
+      "host": "127.0.0.1",
+      "port": 6379,
+      "password": "",
+      "db_index": 0
+  }
+}
