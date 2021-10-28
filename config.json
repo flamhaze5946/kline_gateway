@@ -1,7 +1,11 @@
 {
   "pusher_type": "redis",
+  "fetcher_type": "ccxt",
+  "namespace": "good:kline",
+  "channel_count_per_ws": 100,
+  "ws_url": "wss://fstream.binance.com/ws",
   "timezone": "UTC",
-  "clean_klines": false,
+  "clean_klines": true,
   "klines_save_days": 30,
   "klines_web_fetch_worker": 2,
   "save_buffer_millseconds": 20000,

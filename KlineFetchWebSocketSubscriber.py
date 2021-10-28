@@ -7,7 +7,6 @@ from typing import List, Dict
 from websocket import WebSocketApp
 
 from KlineUtils import get_kline_key_name, timestamp
-from pusher import Pusher
 
 
 class SubscriberSymbolsBody(object):
@@ -25,8 +24,18 @@ class KlineBuffer(object):
 class KlineFetchWebSocketSubscriber(object):
     interval_symbol_kline_buffer_map: Dict[str, Dict[str, KlineBuffer]] = defaultdict(dict)
 
-    def __init__(self, host: str, pusher: Pusher, symbols_body: SubscriberSymbolsBody,
+    def __init__(self, host: str, symbols_body: SubscriberSymbolsBody,
+                 kline_from_start_time_supplier, kline_setter,
                  with_start=None, save_buffer_millseconds: int = 1000 * 10):
+        """
+        :param host: websocket host
+        :param symbols_body: subscribe config
+        :param kline_from_start_time_supplier: (interval: str, symbol: str, start_time: int), query klines
+        :param kline_setter: (interval: str, symbol: str, kline, kline_time: int,
+                                remove_old_kline: bool, insert_new_kline: bool)
+        :param with_start: function with on start
+        :param save_buffer_millseconds: the buffer's scope
+        """
         self.host = host
         self._ws = WebSocketApp(self.host, on_open=self._on_open, on_close=self._on_close, on_error=self._on_error,
                                 on_message=self._on_message)
@@ -34,7 +43,8 @@ class KlineFetchWebSocketSubscriber(object):
         self.save_buffer_millseconds = save_buffer_millseconds
         self._symbols_body = symbols_body
         self._interval_symbols_map = self._symbols_body.interval_symbols_map
-        self._pusher = pusher
+        self._kline_from_start_time_supplier = kline_from_start_time_supplier
+        self._kline_setter = kline_setter
         self._subscribe_params = []
         for interval, symbols in self._interval_symbols_map.items():
             for symbol in symbols:
@@ -101,7 +111,6 @@ class KlineFetchWebSocketSubscriber(object):
         kline_start_time = kline_info['t']
         kline_end_time = min(int(kline_time), kline_info['T'])
         interval = kline_info['i']
-        key = get_kline_key_name(interval, symbol)
 
         kline = [
           kline_start_time,   # kline start time
@@ -145,7 +154,7 @@ class KlineFetchWebSocketSubscriber(object):
 
         insert_new_kline = True
         remove_old_kline = False
-        compare_klines = self._pusher.query_klines_by_start_time(interval, symbol, save_kline[0])
+        compare_klines = self._kline_from_start_time_supplier(interval, symbol, save_kline[0])
         if len(compare_klines) > 0:
             compare_kline = compare_klines[0]
             compare_kline_end_time = compare_kline[6]
@@ -153,5 +162,5 @@ class KlineFetchWebSocketSubscriber(object):
                 remove_old_kline = True
             else:
                 insert_new_kline = False
-        self._pusher.set_kline(interval, symbol, save_kline[:-1], kline_time, remove_old_kline, insert_new_kline)
+        self._kline_setter(interval, symbol, save_kline[:-1], kline_time, remove_old_kline, insert_new_kline)
         print(f'{symbol}/{interval} kline: {save_kline} updated.')
