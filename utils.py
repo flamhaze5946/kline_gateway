@@ -1,5 +1,4 @@
 import time
-import ccxt
 
 
 interval_millseconds_map = {
@@ -12,12 +11,6 @@ interval_millseconds_map = {
     '2h': 1000 * 60 * 60 * 2,
     '4h': 1000 * 60 * 60 * 4,
 }
-
-invoker = ccxt.binance()
-
-exchange_info = invoker.fapiPublicGetExchangeInfo()
-symbol_infos = exchange_info['symbols']
-symbols = [symbol_info['symbol'] for symbol_info in symbol_infos]
 
 
 def get_kline_key_name(namespace: str, interval: str, symbol: str):
