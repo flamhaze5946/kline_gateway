@@ -6,7 +6,7 @@ from typing import List, Dict
 
 from websocket import WebSocketApp
 
-from KlineUtils import get_kline_key_name, timestamp
+from utils import timestamp
 
 
 class SubscriberSymbolsBody(object):

@@ -7,8 +7,8 @@ from typing import List
 from apscheduler.schedulers.blocking import BlockingScheduler
 from redis import StrictRedis, ConnectionPool
 
-from KlineFetchWebSocketSubscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
-from KlineUtils import timestamp, get_kline_key_name, interval_millseconds_map
+from subscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
+from utils import timestamp, get_kline_key_name, interval_millseconds_map
 from config import klines_web_fetch_worker, timezone, save_buffer_millseconds
 from fetcher import CcxtFetcher
 
