@@ -15,7 +15,7 @@ class Fetcher(object):
 class CcxtFetcher(Fetcher):
     def __init__(self, config: dict):
         super().__init__(config)
-        self._binance = ccxt.binance()
+        self._binance = ccxt.binance({'enableRateLimit': True})
 
     def get_symbols(self):
         exchange_info = self._binance.fapiPublicGetExchangeInfo()

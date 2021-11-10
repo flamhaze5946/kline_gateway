@@ -163,4 +163,3 @@ class KlineFetchWebSocketSubscriber(object):
             else:
                 insert_new_kline = False
         self._kline_setter(interval, symbol, save_kline[:-1], kline_time, remove_old_kline, insert_new_kline)
-        print(f'{symbol}/{interval} kline: {save_kline} updated.')

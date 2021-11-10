@@ -28,6 +28,7 @@ class Pusher(object):
         self._clean_klines = self._config['clean_klines']
         self._klines_save_days = self._config['klines_save_days']
         self._channel_count_per_ws = self._config['channel_count_per_ws']
+        self._init_bar_count = self._config['init_bar_count']
         self._symbols = self.fetcher.get_symbols()
         self._scheduler = BlockingScheduler(timezone=timezone)
         self._save_klines_thread_pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -56,7 +57,7 @@ class Pusher(object):
 
     def _stream_update_with_start(self, symbols_body: SubscriberSymbolsBody):
         for interval, symbols in symbols_body.interval_symbols_map.items():
-            self._save_klines(interval, symbols)
+            self._save_klines(interval, symbols, self._init_bar_count)
 
     def _register_clean_jobs(self, save_days: int):
         pass
