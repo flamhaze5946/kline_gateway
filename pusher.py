@@ -51,9 +51,6 @@ class Pusher(object):
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
         pass
 
-    def _set_kline(self, interval: str, symbol: str, kline: list, kline_time: int, remove: bool, insert: bool):
-        pass
-
     def _save_klines(self, interval: str, symbols: List[str], bar_count: int = 99):
         futures = []
         for symbol in symbols:
@@ -111,7 +108,7 @@ class Pusher(object):
             symbols_body = SubscriberSymbolsBody(interval_symbols_map)
             subscriber = KlineFetchWebSocketSubscriber(self._ws_url, symbols_body,
                                                        kline_from_start_time_supplier=self._query_klines_by_start_time,
-                                                       kline_setter=self._set_kline,
+                                                       kline_setter=self._save_klines0,
                                                        with_start=self._stream_update_with_start,
                                                        save_buffer_millseconds=save_buffer_millseconds)
             subscribers.append(subscriber)
@@ -173,9 +170,6 @@ class ArcticPusher(Pusher):
             klines = []
         return klines
 
-    def _set_kline(self, interval: str, symbol: str, kline: list, kline_time: int, remove: bool, insert: bool):
-        self._save_klines0(interval, symbol, [kline])
-
     def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
         db = self._get_database(interval)
         kline_maps = defaultdict(list)
@@ -224,15 +218,6 @@ class RedisPusher(Pusher):
             for symbol in symbols:
                 key = get_kline_key_name(self._namespace, interval, symbol)
                 pipeline.zremrangebyscore(key, 0, now - (save_days * 1000 * 60 * 60 * 24))
-            pipeline.execute()
-
-    def _set_kline(self, interval: str, symbol: str, kline: list, kline_time: int, remove: bool, insert: bool):
-        key = get_kline_key_name(self._namespace, interval, symbol)
-        with self._redisc.pipeline(transaction=True) as pipeline:
-            if remove:
-                pipeline.zremrangebyscore(key, kline[0], kline_time)
-            if insert:
-                pipeline.zadd(key, {json.dumps(kline): kline[0]})
             pipeline.execute()
 
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):

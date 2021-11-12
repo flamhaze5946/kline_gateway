@@ -31,8 +31,7 @@ class KlineFetchWebSocketSubscriber(object):
         :param host: websocket host
         :param symbols_body: subscribe config
         :param kline_from_start_time_supplier: (interval: str, symbol: str, start_time: int), query klines
-        :param kline_setter: (interval: str, symbol: str, kline, kline_time: int,
-                                remove_old_kline: bool, insert_new_kline: bool)
+        :param kline_setter: (interval: str, symbol: str, klines)
         :param with_start: function with on start
         :param save_buffer_millseconds: the buffer's scope
         """
@@ -128,38 +127,33 @@ class KlineFetchWebSocketSubscriber(object):
           kline_time
         ]
 
-        save_kline = kline
+        save_klines = []
         if self.save_buffer_millseconds is not None and self.save_buffer_millseconds > 0:
             kline_buffer = self.interval_symbol_kline_buffer_map[interval][symbol]
-            is_save_kline = False
             now = timestamp()
             with kline_buffer.lock:
-                if kline_buffer.kline is None:
-                    kline_buffer.kline = kline
+                if kline_buffer.last_save_time is None:
+                    save_klines.append(kline)
                 else:
-                    if kline[0] > kline_buffer.kline[6]:
-                        is_save_kline = True
-                    if kline_buffer.last_save_time is None \
-                            or kline_buffer.last_save_time + self.save_buffer_millseconds < now:
-                        is_save_kline = True
-                if is_save_kline:
-                    save_kline = kline_buffer.kline
-                    kline_buffer.kline = kline
-                    kline_buffer.last_save_time = now
-                else:
-                    if kline[0] == kline_buffer.kline[0] and kline[-1] > kline_buffer.kline[-1]:
+                    if kline_buffer.kline is None:
                         kline_buffer.kline = kline
-            if not is_save_kline:
-                return
-
-        insert_new_kline = True
-        remove_old_kline = False
-        compare_klines = self._kline_from_start_time_supplier(interval, symbol, save_kline[0])
-        if len(compare_klines) > 0:
-            compare_kline = compare_klines[0]
-            compare_kline_end_time = compare_kline[6]
-            if int(compare_kline_end_time) < int(save_kline[6]):
-                remove_old_kline = True
-            else:
-                insert_new_kline = False
-        self._kline_setter(interval, symbol, save_kline[:-1], kline_time, remove_old_kline, insert_new_kline)
+                        return
+                    else:
+                        if kline_buffer.kline[0] == kline[0]:
+                            if kline[-1] > kline_buffer.kline[-1]:
+                                kline_buffer.kline = kline
+                            if kline_buffer.kline[-1] - kline_buffer.last_save_time > self.save_buffer_millseconds:
+                                save_klines.append(kline_buffer.kline)
+                                kline_buffer.kline = None
+                        elif kline_buffer.kline[0] < kline[0]:
+                            save_klines.append(kline_buffer.kline)
+                            save_klines.append(kline)
+                            kline_buffer.kline = None
+                if len(save_klines) <= 0:
+                    return
+                else:
+                    kline_buffer.last_save_time = now
+        else:
+            save_klines.append(kline)
+        save_klines = [save_kline[:-1] for save_kline in save_klines]
+        self._kline_setter(interval, symbol, save_klines)
