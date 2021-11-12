@@ -1,3 +1,5 @@
+import time
+
 import ccxt
 
 """
@@ -17,7 +19,12 @@ K线格式
     忽略项
 ]
 """
+
+
 class Fetcher(object):
+
+    max_fetch_count = 1500
+
     def __init__(self, config: dict):
         self._config = config
 
@@ -50,6 +57,43 @@ class CcxtFetcher(Fetcher):
         return [symbol_info['symbol'] for symbol_info in exchange_info['symbols']]
 
     def get_klines(self, interval: str, symbol: str, start_time: int = None, end_time: int = None, bar_count: int = 99):
+        range_klines = []
+        remain_kline_count = bar_count
+        if start_time is not None:
+            last_kline_time = start_time
+            while True:
+                klines = self._get_kline0(interval, symbol, last_kline_time, end_time, remain_kline_count)
+                if len(klines) <= 0:
+                    return range_klines
+                range_klines.extend(klines)
+                last_kline_time = range_klines[-1][0] + 1
+                remain_kline_count = remain_kline_count - len(klines)
+                if remain_kline_count <= 0:
+                    return range_klines
+                if end_time is not None:
+                    if range_klines[-1][0] >= end_time:
+                        return range_klines
+        else:
+            if end_time is None:
+                end_time = int(round(time.time() * 1000))
+            real_end_time = end_time
+            while remain_kline_count > 0:
+                klines = self._get_kline0(interval, symbol, None, real_end_time, remain_kline_count)
+                if len(klines) <= 0:
+                    return range_klines
+                remain_kline_count = remain_kline_count - len(klines)
+                klines.extend(range_klines)
+                range_klines = klines
+                real_end_time = range_klines[0][0] - 1
+            return range_klines
+
+    def _get_kline0(self, interval: str, symbol: str,
+                    start_time: int = None, end_time: int = None, bar_count: int = 99):
+        if bar_count <= 0:
+            bar_count = 99
+        else:
+            bar_count = min(self.max_fetch_count, bar_count)
+
         params = {
             'symbol': symbol,
             'interval': interval,
@@ -60,6 +104,7 @@ class CcxtFetcher(Fetcher):
         if end_time is not None:
             params['endTime'] = end_time
         return self._format(self._binance.fapiPublicGetKlines(params))
+
 
     def _format(self, klines: list) -> list:
         format_klines = []

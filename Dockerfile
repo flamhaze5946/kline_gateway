@@ -1,4 +1,4 @@
-FROM flamhaze5946/lite-trade:20211109.1.0.0
+FROM flamhaze5946/lite-trade:20211112.1.0.0
 
 COPY requirements.txt requirements.txt
 

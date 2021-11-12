@@ -16,7 +16,7 @@ from subscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
 from utils import timestamp, get_kline_key_name
 from config import klines_web_fetch_worker, timezone, save_buffer_millseconds
 from fetcher import CcxtFetcher
-from arctic import Arctic, VERSION_STORE
+import dolphindb as ddb
 
 max_workers = klines_web_fetch_worker
 
@@ -34,6 +34,7 @@ class Pusher(object):
             raise Exception(f'not support fetcher type: {fetcher_type}')
         self.fetcher = fetcher_constructor_map[fetcher_type](self._config)
 
+        self._stream_update = self._config['stream_update']
         self.intervals = self._config['intervals']
         self._namespace = self._config['namespace']
         self._ws_url = self._config['ws_url']
@@ -51,17 +52,19 @@ class Pusher(object):
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
         pass
 
-    def _save_klines(self, interval: str, symbols: List[str], bar_count: int = 99):
+    def _save_klines(self, interval: str, symbols: List[str],
+                     start_time: int = None, end_time: int = None, bar_count: int = 99):
         futures = []
         for symbol in symbols:
-            future = self._save_klines_thread_pool.submit(self._save_latest_symbol_klines, symbol, interval, bar_count)
+            future = self._save_klines_thread_pool.submit(self._save_latest_symbol_klines,
+                                                          symbol, interval, start_time, end_time, bar_count)
             futures.append(future)
         [future.result() for future in futures]
 
     def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
         pass
 
-    def _stream_update_with_start(self, symbols_body: SubscriberSymbolsBody):
+    def _fetch_and_save_klines(self, symbols_body: SubscriberSymbolsBody):
         for interval, symbols in symbols_body.interval_symbols_map.items():
             self._save_klines(interval, symbols, self._init_bar_count)
 
@@ -83,13 +86,14 @@ class Pusher(object):
         self._scheduler.add_job(self._clean, id='clean_1m', args=('1m', self._symbols, save_days),
                                 trigger='cron', minute='*')
 
-    def _save_latest_symbol_klines(self, symbol: str, interval: str, bar_count: int):
-        klines = self.fetcher.get_klines(interval, symbol, bar_count=bar_count)
+    def _save_latest_symbol_klines(self, symbol: str, interval: str,
+                                   start_time: int = None, end_time: int = None, bar_count: int = 99):
+        klines = self.fetcher.get_klines(interval, symbol, start_time, end_time, bar_count=bar_count)
 
         self._save_klines0(interval, symbol, klines)
         print(f'save {bar_count} klines success, symbol: {symbol}, interval: {interval}')
 
-    def _start_stream_update(self):
+    def _start0(self):
         interval_symbols_maps = []
         current_map = defaultdict(list)
         map_channel_count = 0
@@ -103,28 +107,48 @@ class Pusher(object):
                 map_channel_count = map_channel_count + 1
         interval_symbols_maps.append(current_map)
 
-        subscribers = []
+        symbols_bodys = []
         for interval_symbols_map in interval_symbols_maps:
             symbols_body = SubscriberSymbolsBody(interval_symbols_map)
-            subscriber = KlineFetchWebSocketSubscriber(self._ws_url, symbols_body,
-                                                       kline_from_start_time_supplier=self._query_klines_by_start_time,
-                                                       kline_setter=self._save_klines0,
-                                                       with_start=self._stream_update_with_start,
-                                                       save_buffer_millseconds=save_buffer_millseconds)
-            subscribers.append(subscriber)
-        for subscriber in subscribers:
-            _thread.start_new_thread(subscriber.start, ())
+            symbols_bodys.append(symbols_body)
+        if self._stream_update:
+            for symbols_body in symbols_bodys:
+                if self._stream_update:
+                    subscriber = KlineFetchWebSocketSubscriber(
+                        self._ws_url, symbols_body,
+                        kline_from_start_time_supplier=self._query_klines_by_start_time,
+                        kline_setter=self._save_klines0,
+                        with_start=self._fetch_and_save_klines,
+                        save_buffer_millseconds=save_buffer_millseconds)
+                    _thread.start_new_thread(subscriber.start, ())
+            if self._clean_klines:
+                self._register_clean_jobs(self._klines_save_days)
+            self._scheduler.start()
+        else:
+            for symbols_body in symbols_bodys:
+                self._fetch_and_save_klines(symbols_body)
 
     def start(self):
-        self._start_stream_update()
-        if self._clean_klines:
-            self._register_clean_jobs(self._klines_save_days)
-        self._scheduler.start()
+        self._start0()
 
 
 class MongoPusher(Pusher):
     def __init__(self, config: dict):
         super().__init__(config)
+
+
+class DolphinPusher(Pusher):
+    def __init__(self, config: dict):
+        super().__init__(config)
+
+    def _clean(self, interval: str, symbols: List[str], save_days: int):
+        super()._clean(interval, symbols, save_days)
+
+    def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
+        super()._query_klines_by_start_time(interval, symbol, start_time)
+
+    def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
+        super()._save_klines0(interval, symbol, klines)
 
 
 class ArcticPusher(Pusher):
