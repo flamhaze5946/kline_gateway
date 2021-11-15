@@ -12,7 +12,7 @@
   "@namespace": "命名空间, 表示K线存储的位置",
   "channel_count_per_ws": 100,
   "@channel_count_per_ws": "表示webSocket每个连接最多订阅的频道数",
-  "init_bar_count": 2,
+  "init_bar_count": 2000,
   "@init_bar_count": "表示通过http方式初始化的K线数量",
   "ws_url": "wss://fstream.binance.com/ws",
   "@ws_url": "交易所webSocket地址",

@@ -56,16 +56,33 @@ class CcxtFetcher(Fetcher):
         exchange_info = self._binance.fapiPublicGetExchangeInfo()
         return [symbol_info['symbol'] for symbol_info in exchange_info['symbols']]
 
-    def get_klines(self, interval: str, symbol: str, start_time: int = None, end_time: int = None, bar_count: int = 99):
+    def get_klines(self, interval: str, symbol: str, start_time: int = None, end_time: int = None, bar_count: int = 99,
+                   return_klines: bool = True, with_action=None):
+        """
+        get klines and with some action
+        :param interval: interval
+        :param symbol: symbol
+        :param start_time: start_time
+        :param end_time: end_time
+        :param bar_count: max bar count
+        :param return_klines: return all klines if true
+        :param with_action: do action with kline buffer, arguments must be (interval, symbol, klines)
+        :return: klines
+        """
         range_klines = []
         remain_kline_count = bar_count
         if start_time is not None:
             last_kline_time = start_time
             while True:
                 klines = self._get_kline0(interval, symbol, last_kline_time, end_time, remain_kline_count)
+                if with_action is not None:
+                    with_action(interval, symbol, klines)
                 if len(klines) <= 0:
                     return range_klines
-                range_klines.extend(klines)
+                if return_klines:
+                    range_klines.extend(klines)
+                else:
+                    range_klines = klines
                 last_kline_time = range_klines[-1][0] + 1
                 remain_kline_count = remain_kline_count - len(klines)
                 if remain_kline_count <= 0:
@@ -79,10 +96,13 @@ class CcxtFetcher(Fetcher):
             real_end_time = end_time
             while remain_kline_count > 0:
                 klines = self._get_kline0(interval, symbol, None, real_end_time, remain_kline_count)
+                if with_action is not None:
+                    with_action(interval, symbol, klines)
                 if len(klines) <= 0:
                     return range_klines
                 remain_kline_count = remain_kline_count - len(klines)
-                klines.extend(range_klines)
+                if return_klines:
+                    klines.extend(range_klines)
                 range_klines = klines
                 real_end_time = range_klines[0][0] - 1
             return range_klines

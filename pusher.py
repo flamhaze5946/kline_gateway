@@ -66,7 +66,7 @@ class Pusher(object):
 
     def _fetch_and_save_klines(self, symbols_body: SubscriberSymbolsBody):
         for interval, symbols in symbols_body.interval_symbols_map.items():
-            self._save_klines(interval, symbols, self._init_bar_count)
+            self._save_klines(interval, symbols, bar_count=self._init_bar_count)
 
     def _register_clean_jobs(self, save_days: int):
         self._scheduler.add_job(self._clean, id='clean_4h', args=('4h', self._symbols, save_days),
@@ -88,9 +88,8 @@ class Pusher(object):
 
     def _save_latest_symbol_klines(self, symbol: str, interval: str,
                                    start_time: int = None, end_time: int = None, bar_count: int = 99):
-        klines = self.fetcher.get_klines(interval, symbol, start_time, end_time, bar_count=bar_count)
-
-        self._save_klines0(interval, symbol, klines)
+        self.fetcher.get_klines(interval, symbol, start_time, end_time,
+                                         bar_count=bar_count, return_klines=False, with_action=self._save_klines0)
         print(f'save {bar_count} klines success, symbol: {symbol}, interval: {interval}')
 
     def _start0(self):
@@ -249,6 +248,8 @@ class RedisPusher(Pusher):
         return self._redisc.zrangebyscore(key, start_time, start_time)
 
     def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
+        if klines is None or len(klines) <= 0:
+            return
         key = get_kline_key_name(self._namespace, interval, symbol)
         kline_score_mapping = {json.dumps(kline): kline[0] for kline in klines}
 
