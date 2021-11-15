@@ -2,5 +2,5 @@ ccxt
 apscheduler
 redis
 arctic
-mongodb
+pymongo
 websocket-client
