@@ -1,4 +1,6 @@
 ccxt
 apscheduler
 redis
+arctic
+mongodb
 websocket-client
