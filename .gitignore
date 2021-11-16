@@ -2,3 +2,4 @@
 *.log
 *.logs
 test.py
+sqlite_dbs

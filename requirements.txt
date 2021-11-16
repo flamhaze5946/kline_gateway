@@ -4,3 +4,4 @@ redis
 arctic
 pymongo
 websocket-client
+dolphindb

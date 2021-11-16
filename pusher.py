@@ -1,4 +1,7 @@
 import _thread
+import math
+import os
+import threading
 
 import pandas
 import pandas as pd
@@ -9,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from arctic import Arctic, VERSION_STORE
 from arctic.date import DateRange
 from redis import StrictRedis, ConnectionPool
 
@@ -16,7 +20,7 @@ from subscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
 from utils import timestamp, get_kline_key_name
 from config import klines_web_fetch_worker, timezone, save_buffer_millseconds
 from fetcher import CcxtFetcher
-import dolphindb as ddb
+import sqlite3
 
 max_workers = klines_web_fetch_worker
 
@@ -47,6 +51,12 @@ class Pusher(object):
         self._save_klines_thread_pool = ThreadPoolExecutor(max_workers=max_workers)
 
     def _clean(self, interval: str, symbols: List[str], save_days: int):
+        now = timestamp()
+        start_time = 0
+        end_time = now - (save_days * 1000 * 60 * 60 * 24)
+        self._clean0(interval, symbols, start_time, end_time)
+
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
         pass
 
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
@@ -89,7 +99,7 @@ class Pusher(object):
     def _save_latest_symbol_klines(self, symbol: str, interval: str,
                                    start_time: int = None, end_time: int = None, bar_count: int = 99):
         self.fetcher.get_klines(interval, symbol, start_time, end_time,
-                                         bar_count=bar_count, return_klines=False, with_action=self._save_klines0)
+                                bar_count=bar_count, return_klines=False, with_action=self._save_klines0)
         print(f'save {bar_count} klines success, symbol: {symbol}, interval: {interval}')
 
     def _start0(self):
@@ -131,17 +141,175 @@ class Pusher(object):
         self._start0()
 
 
+class SqlitePusher(Pusher):
+    table_name = 'kline'
+    insert_batch_size = 1000
+    sqlite_connection_map = defaultdict(dict)
+    conn_lock_map = defaultdict(dict)
+    operate_lock_map = defaultdict(dict)
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        sqlite_config = self._config['sqlite']
+        self.sqlite_dir = sqlite_config['dir']
+
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
+        for symbol in symbols:
+            conn = self._get_connection(interval, symbol)
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                delete from {self.table_name} where start_time between {start_time} and {end_time};
+                '''
+            )
+            conn.commit()
+
+    def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
+        klines = []
+        conn = self._get_connection(interval, symbol)
+        cursor = conn.cursor()
+        cursor.execute(
+            f'''
+                    select id, start_time, open_price, high_price, low_price, close_price, 
+                    volume, end_time, amount, trade_num, positive_volume, positive_amount, ignore_0 from {self.table_name}
+                    where start_time = {start_time} order by end_time asc 
+                    '''
+        )
+        conn.commit()
+        for row in cursor:
+            kline = [
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                row[7],
+                row[8],
+                row[9],
+                row[10],
+                row[11],
+                row[12],
+            ]
+            klines.append(kline)
+        return klines
+
+    def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
+        batchs = []
+        batch_count = math.ceil(len(klines) / self.insert_batch_size)
+        for i in range(batch_count):
+            batchs.append([])
+        for kline_index in range(len(klines)):
+            kline = klines[kline_index]
+            batch = batchs[kline_index % len(batchs)]
+            batch.append(kline)
+        for batch in batchs:
+            if len(batch) <= 0:
+                continue
+            insert_sql_prefix = f'\
+                    insert into {self.table_name} (start_time, open_price, high_price, low_price, close_price, \
+                    volume, end_time, amount, trade_num, positive_volume, positive_amount, ignore_0) values \
+                    '
+            for kline in batch:
+                insert_sql_prefix = insert_sql_prefix + f'\
+                        ({kline[0]}, {kline[1]}, {kline[2]}, {kline[3]}, {kline[4]}, {kline[5]}, {kline[6]},\
+                         {kline[7]}, {kline[8]}, {kline[9]}, {kline[10]}, "{kline[11]}"), '
+            insert_sql = insert_sql_prefix[:-2]
+            conn = self._get_connection(interval, symbol)
+            cursor = conn.cursor()
+            cursor.execute(insert_sql)
+            conn.commit()
+
+    def _table_ensure(self, connection):
+        cursor = connection.cursor()
+        cursor.execute(
+            f'''
+            SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '{self.table_name}' 
+            '''
+        )
+        connection.commit()
+        count = 0
+        for row in cursor:
+            count = row[0]
+            break
+
+        if count > 0:
+            return
+        self._create_table(connection)
+
+    def _create_table(self, connection):
+        cursor = connection.cursor()
+        cursor.executescript(
+            f'''
+            create table "{self.table_name}"
+            (
+                id integer not null
+                    constraint symbol_pk
+                        primary key autoincrement,
+                start_time integer not null,
+                open_price real not null,
+                high_price real not null,
+                low_price real not null,
+                close_price real not null,
+                volume real not null,
+                end_time integer not null,
+                amount real not null,
+                trade_num integer not null,
+                positive_volume real not null,
+                positive_amount real not null,
+                ignore_0 text
+            );
+
+            create index end_time_index
+                on "{self.table_name}" (end_time);
+
+            create index start_time_index
+                on "{self.table_name}" (start_time);
+            '''
+        )
+        connection.commit()
+
+    def _get_connection(self, interval, symbol):
+        interval_map = self.sqlite_connection_map[interval]
+        current_thread = threading.current_thread()
+        if symbol not in interval_map:
+            interval_map[symbol] = {}
+
+        thread_conn_map = interval_map[symbol]
+        if current_thread in thread_conn_map:
+            return thread_conn_map[current_thread]
+        else:
+            sqlite_path = os.path.join(self.sqlite_dir, self._get_sqlite_filename(interval, symbol))
+            conn = sqlite3.connect(sqlite_path)
+            self._table_ensure(conn)
+            thread_conn_map[current_thread] = conn
+            return conn
+
+    @staticmethod
+    def _get_sqlite_filename(interval: str, symbol: str):
+        return f'{symbol}-{interval}.db'
+
+
 class MongoPusher(Pusher):
     def __init__(self, config: dict):
         super().__init__(config)
+
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
+        super()._clean0(interval, symbols, start_time, end_time)
+
+    def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
+        super()._query_klines_by_start_time(interval, symbol, start_time)
+
+    def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
+        super()._save_klines0(interval, symbol, klines)
 
 
 class DolphinPusher(Pusher):
     def __init__(self, config: dict):
         super().__init__(config)
 
-    def _clean(self, interval: str, symbols: List[str], save_days: int):
-        super()._clean(interval, symbols, save_days)
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
+        super()._clean0(interval, symbols, start_time, end_time)
 
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
         super()._query_klines_by_start_time(interval, symbol, start_time)
@@ -165,8 +333,8 @@ class ArcticPusher(Pusher):
         self.collection_prefix = self._config['mongodb']['collection_prefix']
         self.connection = Arctic(f'{self.host}:{self.port}', self.db_name)
 
-    def _clean(self, interval: str, symbols: List[str], save_days: int):
-        super()._clean(interval, symbols, save_days)
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
+        super()._clean0(interval, symbols, start_time, end_time)
 
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
         db = self._get_database(interval)
@@ -235,12 +403,11 @@ class RedisPusher(Pusher):
                                     db=redis_config['db_index'], password=redis_config['password'])
         self._redisc = StrictRedis(connection_pool=redis_pool)
 
-    def _clean(self, interval: str, symbols: List[str], save_days: int):
-        now = timestamp()
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
         with self._redisc.pipeline(transaction=False) as pipeline:
             for symbol in symbols:
                 key = get_kline_key_name(self._namespace, interval, symbol)
-                pipeline.zremrangebyscore(key, 0, now - (save_days * 1000 * 60 * 60 * 24))
+                pipeline.zremrangebyscore(key, start_time, end_time)
             pipeline.execute()
 
     def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):

@@ -1,9 +1,10 @@
-from pusher import RedisPusher, ArcticPusher
+from pusher import RedisPusher, ArcticPusher, SqlitePusher
 from config import config_dict
 
 pusher_constructor_map = {
     'redis': RedisPusher,
-    'arctic': ArcticPusher
+    'arctic': ArcticPusher,
+    'sqlite': SqlitePusher
 }
 
 if __name__ == '__main__':
