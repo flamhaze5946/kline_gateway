@@ -243,7 +243,7 @@ class MySQLPusher(Pusher):
             kline_start_time_mapping = {json.dumps(kline): kline[0] for kline in klines}
             start_time = min(kline_start_time_mapping.values())
             end_time = max(kline_start_time_mapping.values())
-            delete_sql = f'delete from {table_name} where start_time <= {start_time} and {end_time} <= end_time'
+            delete_sql = f'delete from {table_name} where start_time >= {start_time} and end_time <= {end_time}'
 
             cursor = connection.cursor()
             cursor.execute(delete_sql)
