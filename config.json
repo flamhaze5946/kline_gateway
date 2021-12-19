@@ -24,7 +24,7 @@
   "@klines_save_days": "K线的保留时间",
   "klines_web_fetch_worker": 2,
   "@klines_web_fetch_worker": "表示多少个线程并行获取交易所K线",
-  "save_buffer_millseconds": 5000,
+  "save_buffer_millseconds": 20000,
   "@save_buffer_millseconds": "webSocket获取到的数据缓冲多少时间存入存储层, 值越大则更新速度越慢, 但更不消耗性能, 小于等于0则表示不使用缓冲技术",
   "redis": {
       "host": "127.0.0.1",
