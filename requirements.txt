@@ -1,7 +1,8 @@
 ccxt
 apscheduler
 redis
-arctic
 pymongo
+pandas==1.1.5
 websocket-client
-dolphindb
+pymysql
+DBUtils

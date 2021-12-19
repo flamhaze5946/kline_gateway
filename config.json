@@ -4,7 +4,7 @@
     "1m", "3m", "5m", "15m", "30m",
     "1h", "2h", "4h"
   ],
-  "pusher_type": "sqlite",
+  "pusher_type": "mysql",
   "@pusher_type": "用于切换推送目标, 目前只能使用 redis",
   "fetcher_type": "ccxt",
   "@fetcher_type": "用于切换K线数据获取器类型, 目前只能使用 ccxt",
@@ -40,5 +40,13 @@
   },
   "sqlite": {
     "dir": "/tmp"
+  },
+  "mysql": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "username": "root",
+    "password": "666666",
+    "database": "kline_gateway",
+    "insert_batch_size": 1000
   }
 }

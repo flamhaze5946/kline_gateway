@@ -3,17 +3,14 @@ import math
 import os
 import threading
 
-import pandas
-import pandas as pd
 import json
-import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
+import pymysql
 from apscheduler.schedulers.blocking import BlockingScheduler
-from arctic import Arctic, VERSION_STORE
-from arctic.date import DateRange
+from dbutils.pooled_db import PooledDB
 from redis import StrictRedis, ConnectionPool
 
 from subscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
@@ -141,6 +138,187 @@ class Pusher(object):
         self._start0()
 
 
+class MySQLPusher(Pusher):
+    def __init__(self, config: dict):
+        super().__init__(config)
+        mysql_config = self._config['mysql']
+        self.host = mysql_config['host']
+        self.port = mysql_config['port']
+        self.username = mysql_config['username']
+        self.password = mysql_config['password']
+        self.database = mysql_config['database']
+        self.insert_batch_size = mysql_config['insert_batch_size']
+        init_conn = pymysql.connect(host=self.host, user=self.username, password=self.password, charset='utf8mb4')
+        init_conn.ping(reconnect=True)
+        self.available_tables = set()
+        database_create_sql = f'CREATE DATABASE IF NOT EXISTS {self.database}'
+        cursor = init_conn.cursor()
+        cursor.execute(database_create_sql)
+        init_conn.close()
+        self.connection_pool = PooledDB(
+            creator=pymysql,
+            maxconnections=40,
+            mincached=2,
+            maxcached=10,
+            blocking=True,
+            setsession=[],
+            ping=5,
+            host=self.host,
+            port=self.port,
+            user=self.username,
+            password=self.password,
+            database=self.database,
+            charset='utf8mb4')
+
+    def _get_connection(self):
+        return self.connection_pool.connection()
+
+    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
+        connection = self._get_connection()
+        for symbol in symbols:
+            table_name = self._generate_table_name(symbol, interval)
+            cursor = connection.cursor()
+            cursor.execute(
+                f'''
+                delete from {table_name} where start_time between {start_time} and {end_time};
+                '''
+            )
+            connection.commit()
+
+    def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
+        connection = self._get_connection()
+        klines = []
+        table_name = self._generate_table_name(symbol, interval)
+        cursor = connection.cursor()
+        cursor.execute(
+            f'''
+            select id, start_time, open_price, high_price, low_price, close_price, 
+            volume, end_time, amount, trade_num, positive_volume, positive_amount, ignore_0 from {table_name}
+            where start_time = {start_time} order by end_time asc 
+            '''
+        )
+        connection.commit()
+        for row in cursor:
+            kline = [
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                row[7],
+                row[8],
+                row[9],
+                row[10],
+                row[11],
+                row[12],
+            ]
+            klines.append(kline)
+        return klines
+
+    def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
+        connection = self._get_connection()
+        batchs = []
+        batch_count = math.ceil(len(klines) / self.insert_batch_size)
+        table_name = self._generate_table_name(symbol, interval)
+        for i in range(batch_count):
+            batchs.append([])
+        for kline_index in range(len(klines)):
+            kline = klines[kline_index]
+            batch = batchs[kline_index % len(batchs)]
+            batch.append(kline)
+        for batch in batchs:
+            if len(batch) <= 0:
+                continue
+            insert_sql_prefix = f'\
+                            insert into {table_name} (start_time, open_price, high_price, low_price, close_price, \
+                            volume, end_time, amount, trade_num, positive_volume, positive_amount, ignore_0) values \
+                            '
+            for kline in batch:
+                insert_sql_prefix = insert_sql_prefix + f'\
+                                ({kline[0]}, {kline[1]}, {kline[2]}, {kline[3]}, {kline[4]}, {kline[5]}, {kline[6]},\
+                                 {kline[7]}, {kline[8]}, {kline[9]}, {kline[10]}, "{kline[11]}"), '
+            insert_sql = insert_sql_prefix[:-2]
+
+            kline_start_time_mapping = {json.dumps(kline): kline[0] for kline in klines}
+            start_time = min(kline_start_time_mapping.values())
+            end_time = max(kline_start_time_mapping.values())
+            delete_sql = f'delete from {table_name} where start_time <= {start_time} and {end_time} <= end_time'
+
+            cursor = connection.cursor()
+            cursor.execute(delete_sql)
+            cursor.execute(insert_sql)
+            connection.commit()
+
+    def _create_table(self, table_name: str):
+        connection = self._get_connection()
+        cursor = connection.cursor()
+        cursor.execute(
+            f'''
+            create table if not exists {table_name}
+            (
+                id              int auto_increment,
+                start_time      bigint       not null,
+                open_price      varchar(255) not null,
+                high_price      varchar(255) not null,
+                low_price       varchar(255) not null,
+                close_price     varchar(255) not null,
+                volume          varchar(255) not null,
+                end_time        bigint       not null,
+                amount          varchar(255) not null,
+                trade_num       int          not null,
+                positive_volume varchar(255) null,
+                positive_amount varchar(255) not null,
+                ignore_0        text         null,
+                constraint symbol_interval_pk
+                    primary key (id)
+            );
+            '''
+        )
+        cursor.execute(
+            f'''
+            create unique index symbol_interval_end_time_index
+                on {table_name} (end_time);
+            '''
+        )
+        cursor.execute(
+            f'''
+            create unique index symbol_interval_start_time_index
+                on {table_name} (start_time);
+            '''
+        )
+        connection.commit()
+        self.available_tables.add(table_name)
+
+    def _table_ensure(self, table_name: str):
+        if table_name in self.available_tables:
+            return
+        connection = self._get_connection()
+        cursor = connection.cursor()
+        cursor.execute(
+            f'''
+            select count(*)
+            from information_schema.TABLES 
+            where TABLE_NAME = '{table_name}';
+            '''
+        )
+        connection.commit()
+        count = 0
+        rows = cursor.fetchall()
+        for row in rows:
+            count = row[0]
+            break
+
+        if count > 0:
+            return
+        self._create_table(table_name)
+
+    def _generate_table_name(self, symbol: str, interval: str):
+        table_name = f'{symbol}_{interval}'
+        self._table_ensure(table_name)
+        return table_name
+
+
 class SqlitePusher(Pusher):
     table_name = 'kline'
     insert_batch_size = 1000
@@ -215,8 +393,15 @@ class SqlitePusher(Pusher):
                         ({kline[0]}, {kline[1]}, {kline[2]}, {kline[3]}, {kline[4]}, {kline[5]}, {kline[6]},\
                          {kline[7]}, {kline[8]}, {kline[9]}, {kline[10]}, "{kline[11]}"), '
             insert_sql = insert_sql_prefix[:-2]
+
+            kline_start_time_mapping = {json.dumps(kline): kline[0] for kline in klines}
+            start_time = min(kline_start_time_mapping.values())
+            end_time = max(kline_start_time_mapping.values())
+            delete_sql = f'delete from {self.table_name} where start_time <= {start_time} and {end_time} <= end_time'
+
             conn = self._get_connection(interval, symbol)
             cursor = conn.cursor()
+            cursor.execute(delete_sql)
             cursor.execute(insert_sql)
             conn.commit()
 
@@ -316,83 +501,6 @@ class DolphinPusher(Pusher):
 
     def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
         super()._save_klines0(interval, symbol, klines)
-
-
-class ArcticPusher(Pusher):
-    """
-    没法用, 以后知道怎么用再看看
-    """
-
-    interval_collection_map = {}
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-        self.host = self._config['mongodb']['host']
-        self.port = self._config['mongodb']['port']
-        self.db_name = self._config['mongodb']['db_name']
-        self.collection_prefix = self._config['mongodb']['collection_prefix']
-        self.connection = Arctic(f'{self.host}:{self.port}', self.db_name)
-
-    def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
-        super()._clean0(interval, symbols, start_time, end_time)
-
-    def _query_klines_by_start_time(self, interval: str, symbol: str, start_time: int):
-        db = self._get_database(interval)
-        kline_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time / 1000))
-        try:
-            kline_df = db.read(symbol, date_range=DateRange(kline_time, kline_time))
-            kline_item = kline_df.iloc[0]
-            kline = [
-                kline_item['start_time'],
-                kline_item['open_price'],
-                kline_item['high_price'],
-                kline_item['low_price'],
-                kline_item['close_price'],
-                kline_item['volume'],
-                kline_item['end_time'],
-                kline_item['amount'],
-                kline_item['trade_num'],
-                kline_item['positive_volume'],
-                kline_item['positive_amount'],
-                kline_item['ignore_0'],
-            ]
-            klines = [kline]
-        except:
-            klines = []
-        return klines
-
-    def _save_klines0(self, interval: str, symbol: str, klines: List[list]):
-        db = self._get_database(interval)
-        kline_maps = defaultdict(list)
-        for kline in klines:
-            kline_maps['start_time'].append(kline[0])
-            kline_maps['open_price'].append(kline[1])
-            kline_maps['high_price'].append(kline[2])
-            kline_maps['low_price'].append(kline[3])
-            kline_maps['close_price'].append(kline[4])
-            kline_maps['volume'].append(kline[5])
-            kline_maps['end_time'].append(kline[6])
-            kline_maps['amount'].append(kline[7])
-            kline_maps['trade_num'].append(kline[8])
-            kline_maps['positive_volume'].append(kline[9])
-            kline_maps['positive_amount'].append(kline[10])
-            kline_maps['ignore_0'].append(kline[11])
-        df = pd.DataFrame(data=kline_maps)
-        df['index'] = pandas.to_datetime(df['start_time'], unit='ms')
-        df.set_index('index', inplace=True, drop=True)
-
-        db.write(symbol, df)
-
-    def _get_database(self, interval: str):
-        if interval in self.interval_collection_map:
-            return self.interval_collection_map[interval]
-        collection_names = self.connection.list_libraries()
-        interval_collection_name = f'{self.collection_prefix}-{interval}'
-        if interval_collection_name not in collection_names:
-            self.connection.initialize_library(interval_collection_name, lib_type=VERSION_STORE)
-        collection = self.connection[interval_collection_name]
-        self.interval_collection_map[interval] = collection
-        return collection
 
 
 class RedisPusher(Pusher):
