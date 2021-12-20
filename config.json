@@ -40,8 +40,6 @@
       "days": 365
     }
   },
-  "klines_save_days": 30,
-  "@klines_save_days": "K线的保留时间",
   "klines_web_fetch_worker": 5,
   "@klines_web_fetch_worker": "表示多少个线程并行获取交易所K线",
   "save_buffer_millseconds": 5000,

@@ -53,7 +53,6 @@ class Pusher(object):
         self._namespace = self._config['namespace']
         self._ws_url = self._config['ws_url']
         self._clean_klines = self._config['clean_klines']
-        self._klines_save_days = self._config['klines_save_days']
         self._channel_count_per_ws = self._config['channel_count_per_ws']
         self._init_bar_count = self._config['init_bar_count']
         self._symbols = self.fetcher.get_symbols()
