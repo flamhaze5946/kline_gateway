@@ -6,7 +6,7 @@ import threading
 import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import List, Any
 
 import pymysql
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -16,12 +16,25 @@ from redis import StrictRedis, ConnectionPool
 from subscriber import SubscriberSymbolsBody, KlineFetchWebSocketSubscriber
 from utils import timestamp, get_kline_key_name
 from config import klines_web_fetch_worker, timezone, save_buffer_millseconds
-from fetcher import CcxtFetcher
+from fetcher import CcxtFetcher, DebugFetcher
 import sqlite3
 
 max_workers = klines_web_fetch_worker
 
+interval_millseconds_map = {
+    '1m': 1000 * 60,
+    '3m': 1000 * 60 * 3,
+    '5m': 1000 * 60 * 5,
+    '15m': 1000 * 60 * 15,
+    '30m': 1000 * 60 * 30,
+    '1h': 1000 * 60 * 60,
+    '2h': 1000 * 60 * 60 * 2,
+    '4h': 1000 * 60 * 60 * 4
+}
+
+
 fetcher_constructor_map = {
+    'debug': DebugFetcher,
     'ccxt': CcxtFetcher
 }
 
@@ -47,10 +60,23 @@ class Pusher(object):
         self._scheduler = BlockingScheduler(timezone=timezone)
         self._save_klines_thread_pool = ThreadPoolExecutor(max_workers=max_workers)
 
-    def _clean(self, interval: str, symbols: List[str], save_days: int):
+        self.clean_type_func_map = {
+            'by_days': self._clean_by_days,
+            'by_counts': self._clean_by_counts
+        }
+
+    def _clean_by_days(self, interval: str, symbols: List[str], clean_config: dict):
+        save_days = clean_config['days']
         now = timestamp()
         start_time = 0
         end_time = now - (save_days * 1000 * 60 * 60 * 24)
+        self._clean0(interval, symbols, start_time, end_time)
+
+    def _clean_by_counts(self, interval: str, symbols: List[str], clean_config: dict):
+        counts = clean_config['counts']
+        now = timestamp()
+        start_time = 0
+        end_time = now - (interval_millseconds_map[interval] * counts)
         self._clean0(interval, symbols, start_time, end_time)
 
     def _clean0(self, interval: str, symbols: List[str], start_time: int, end_time: int):
@@ -75,22 +101,22 @@ class Pusher(object):
         for interval, symbols in symbols_body.interval_symbols_map.items():
             self._save_klines(interval, symbols, bar_count=self._init_bar_count)
 
-    def _register_clean_jobs(self, save_days: int):
-        self._scheduler.add_job(self._clean, id='clean_4h', args=('4h', self._symbols, save_days),
+    def _register_clean_jobs(self, clean_func: Any, clean_config: dict):
+        self._scheduler.add_job(clean_func, id='clean_4h', args=('4h', self._symbols, clean_config),
                                 trigger='cron', hour='*/4')
-        self._scheduler.add_job(self._clean, id='clean_2h', args=('2h', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_2h', args=('2h', self._symbols, clean_config),
                                 trigger='cron', hour='*/2')
-        self._scheduler.add_job(self._clean, id='clean_1h', args=('1h', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_1h', args=('1h', self._symbols, clean_config),
                                 trigger='cron', hour='*')
-        self._scheduler.add_job(self._clean, id='clean_30m', args=('30m', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_30m', args=('30m', self._symbols, clean_config),
                                 trigger='cron', minute='*/30')
-        self._scheduler.add_job(self._clean, id='clean_15m', args=('15m', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_15m', args=('15m', self._symbols, clean_config),
                                 trigger='cron', minute='*/15')
-        self._scheduler.add_job(self._clean, id='clean_5m', args=('5m', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_5m', args=('5m', self._symbols, clean_config),
                                 trigger='cron', minute='*/5')
-        self._scheduler.add_job(self._clean, id='clean_3m', args=('3m', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_3m', args=('3m', self._symbols, clean_config),
                                 trigger='cron', minute='*/3')
-        self._scheduler.add_job(self._clean, id='clean_1m', args=('1m', self._symbols, save_days),
+        self._scheduler.add_job(clean_func, id='clean_1m', args=('1m', self._symbols, clean_config),
                                 trigger='cron', minute='*')
 
     def _save_latest_symbol_klines(self, symbol: str, interval: str,
@@ -128,7 +154,10 @@ class Pusher(object):
                         save_buffer_millseconds=save_buffer_millseconds)
                     _thread.start_new_thread(subscriber.start, ())
             if self._clean_klines:
-                self._register_clean_jobs(self._klines_save_days)
+                clean_type = self._config['klines_clean_type']
+                clean_func = self.clean_type_func_map[clean_type]
+                clean_config = self._config['klines_clean_config'][clean_type]
+                self._register_clean_jobs(clean_func, clean_config)
             self._scheduler.start()
         else:
             for symbols_body in symbols_bodys:
@@ -157,9 +186,9 @@ class MySQLPusher(Pusher):
         init_conn.close()
         self.connection_pool = PooledDB(
             creator=pymysql,
-            maxconnections=40,
-            mincached=2,
-            maxcached=10,
+            maxconnections=20,
+            mincached=10,
+            maxcached=20,
             blocking=True,
             setsession=[],
             ping=5,

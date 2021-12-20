@@ -1,4 +1,5 @@
 import _thread
+import datetime
 import json
 from collections import defaultdict
 from threading import Lock
@@ -89,6 +90,12 @@ class KlineFetchWebSocketSubscriber(object):
         self._restart()
 
     def _on_message(self, ws: WebSocketApp, message):
+        try:
+            self._on_message0(ws, message)
+        except Exception as e:
+            print(e)
+
+    def _on_message0(self, ws: WebSocketApp, message):
         fire_message = False
         try:
             body = None
@@ -112,19 +119,19 @@ class KlineFetchWebSocketSubscriber(object):
         interval = kline_info['i']
 
         kline = [
-          kline_start_time,   # kline start time
-          kline_info['o'],    # kline open price
-          kline_info['h'],    # kline high price
-          kline_info['l'],    # kline low price
-          kline_info['c'],    # kline close price
-          kline_info['v'],    # kline volume
-          kline_end_time,     # kline end time
-          kline_info['q'],    # kline deal amount
-          kline_info['n'],    # kline deal count
-          kline_info['V'],    # kline positive deal count
-          kline_info['Q'],    # kline positive deal amount
-          "0",
-          kline_time
+            kline_start_time,  # kline start time
+            kline_info['o'],  # kline open price
+            kline_info['h'],  # kline high price
+            kline_info['l'],  # kline low price
+            kline_info['c'],  # kline close price
+            kline_info['v'],  # kline volume
+            kline_end_time,  # kline end time
+            kline_info['q'],  # kline deal amount
+            kline_info['n'],  # kline deal count
+            kline_info['V'],  # kline positive deal count
+            kline_info['Q'],  # kline positive deal amount
+            "0",
+            kline_time
         ]
 
         save_klines = []
@@ -135,20 +142,29 @@ class KlineFetchWebSocketSubscriber(object):
                 if kline_buffer.last_save_time is None:
                     save_klines.append(kline)
                 else:
+                    elapsed_time = now - kline_buffer.last_save_time
                     if kline_buffer.kline is None:
-                        kline_buffer.kline = kline
-                        return
+                        if elapsed_time < self.save_buffer_millseconds:
+                            kline_buffer.kline = kline
+                            return
+                        else:
+                            save_klines.append(kline)
                     else:
-                        if kline_buffer.kline[0] == kline[0]:
-                            if kline[-1] > kline_buffer.kline[-1]:
+                        if kline[0] < kline_buffer.kline[0]:
+                            return
+                        elif kline[0] == kline_buffer.kline[0]:
+                            if kline[-1] <= kline_buffer.kline[-1]:
+                                return
+                            if elapsed_time < self.save_buffer_millseconds:
                                 kline_buffer.kline = kline
-                            if kline_buffer.kline[-1] - kline_buffer.last_save_time > self.save_buffer_millseconds:
-                                save_klines.append(kline_buffer.kline)
+                            else:
+                                save_klines.append(kline)
                                 kline_buffer.kline = None
-                        elif kline_buffer.kline[0] < kline[0]:
+                        else:
                             save_klines.append(kline_buffer.kline)
                             save_klines.append(kline)
                             kline_buffer.kline = None
+
                 if len(save_klines) <= 0:
                     return
                 else:
@@ -157,3 +173,4 @@ class KlineFetchWebSocketSubscriber(object):
             save_klines.append(kline)
         save_klines = [save_kline[:-1] for save_kline in save_klines]
         self._kline_setter(interval, symbol, save_klines)
+

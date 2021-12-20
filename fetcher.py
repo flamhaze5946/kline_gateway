@@ -146,3 +146,11 @@ class CcxtFetcher(Fetcher):
             format_klines.append(format_kline)
         return format_klines
 
+
+class DebugFetcher(CcxtFetcher):
+    def __init__(self, config: dict):
+        super().__init__(config)
+
+    def get_symbols(self):
+        return ['BTCUSDT']
+
